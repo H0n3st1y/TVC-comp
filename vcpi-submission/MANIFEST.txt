@@ -13,9 +13,9 @@ Validation:
   Rows: 13,826,680
   Compounds: 1,064 / 1,064
   Genes: 12,995 / 12,995
-  Predicted expression min: 0.0058
-  Predicted expression mean: 3.6581
-  Predicted expression max: 14.0582
+  Predicted expression min: 0.0053
+  Predicted expression mean: 3.6760
+  Predicted expression max: 14.0539
   Status: OK - prediction file is submission-shaped
 
 Required schema:
@@ -24,20 +24,25 @@ Required schema:
   predicted_expression
 
 Model:
-  Training release: vcpi-0003 / tvc-qnu-012
-  Training compounds: 10,261
+  Training releases: vcpi-0003 / tvc-qnu-012 + tvc-kdl-010
+  Training compounds: 11,754
   Scored genes: 12,995
-  Final strategy: 40% per-gene mean baseline + 60% Morgan fingerprint KNN signal
-  Best validation wMSE: 0.2266
+  Final strategy: 35% per-gene mean baseline + 65% Morgan fingerprint KNN signal
+  KNN settings: k=100, Tanimoto similarity, power=2
+  Best validation wMSE: 0.22656
 
 Code included:
+  make_predictions.py
+  requirements.txt
   train_pipeline.py
   models.py
   advanced_virtual_cell_components.py
   app.py
+  README.md
+  VCPI_Tech_Stack_All_In_One.md
 
 Note:
   Only predictions.parquet is required unless the organizers ask for code.
 
 SHA256:
-  574b47b79deccd5f09d3aae1242a23d07369984ba924b4514d25870286107a01  predictions.parquet
+  3b4d9a33a6e9fcc17b17545b750e8023528341df5a5394e1c8ac0e811d1560b3  predictions.parquet

@@ -1,5 +1,5 @@
 VCPI Submission Validation Report
-Generated: 2026-05-30
+Generated: 2026-05-30  (updated: k=100 blend)
 Script: check_files/validate_submission.py
 File checked: predictions.parquet
 
@@ -18,13 +18,17 @@ test_compounds.csv     — 1,064 test compounds
   ok    no duplicate (compound, gene_id) pairs
 
 === Prediction Stats ===
-  min  : 0.0102
-  mean : 3.6620
-  max  : 14.0316
+  min  : 0.0053
+  mean : 3.6760
+  max  : 14.0539
   dtype: float32
 
 === RESULT: ALL CHECKS PASSED — file is submission-ready. ===
 
+=== Model ===
+Strategy : 35% per-gene baseline + 65% KNN (k=100, Tanimoto, power=2)
+wMSE     : 0.22656  (prev best 0.2277)
+
 === SHA256 ===
 SHA256(predictions.parquet) =
-0597f566f4f3a4234fc41f025e27ca4e6d851be1e65db327ee074dc3b6cdc007
+3b4d9a33a6e9fcc17b17545b750e8023528341df5a5394e1c8ac0e811d1560b3
