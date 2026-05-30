@@ -1,6 +1,5 @@
 # Virtual Cell Predictor — VCPI Hackathon Submission
 
-**Team:** Anghelo  
 **Contest:** AIxBio Virtual Cell Predictor (VCPI)  
 **Date:** May 30, 2026
 
