@@ -49,6 +49,7 @@ RANDOM_STATE = 42
 MLP_EPOCHS = 50
 MLP_BATCH_SIZE = 256
 MLP_LR = 1e-3
+PCA_COMPONENTS = 256
 
 HERE = Path(__file__).resolve().parent
 ARTIFACTS = HERE / "artifacts"
@@ -152,28 +153,69 @@ def fetch_training_data(job: str) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFr
 
 def build_artifacts(job: str) -> None:
     """Stages 2-6: fetch, save raw artifacts, and build expression."""
+    build_artifacts_for_jobs([job])
+
+
+def build_artifacts_for_jobs(jobs: list[str]) -> None:
+    """Stages 2-6 for one or more VCPI releases.
+
+    Each release is fetched and normalized separately, then the compact
+    compound x scored-gene expression matrices are concatenated. This is
+    the correct way to add another VCPI dataset: every added compound must
+    have real count-derived expression targets, not just a chemistry CSV.
+    """
     from vcpi_prediction_contest import load_gene_filter
 
     ARTIFACTS.mkdir(parents=True, exist_ok=True)
     authenticate()
-    counts, metadata, chemistry = fetch_training_data(job)
 
-    # The raw counts matrix for qnu-012 is large enough to exhaust local
-    # disk on small laptops. Keep only the compact artifacts needed for
-    # training and submission.
-    metadata.to_parquet(METADATA_PATH)
-    chemistry.to_parquet(CHEMISTRY_PATH)
+    gene_filter = load_gene_filter()
+    metadata_parts: list[pd.DataFrame] = []
+    chemistry_parts: list[pd.DataFrame] = []
+    expression_parts: list[pd.DataFrame] = []
+
+    for job in jobs:
+        counts, metadata, chemistry = fetch_training_data(job)
+        metadata = metadata.copy()
+        chemistry = chemistry.copy()
+        metadata["source_job"] = job
+        chemistry["source_job"] = job
+
+        expression_wide = counts_to_expression_wide(
+            counts,
+            metadata,
+            gene_filter=gene_filter,
+            compound_col=COMPOUND_KEY,
+        )
+        expression_wide["source_job"] = job
+        expression_parts.append(expression_wide)
+        metadata_parts.append(metadata)
+        chemistry_parts.append(chemistry)
+        print(
+            f"[expr] {job}: {expression_wide.shape[0]:,} compounds x "
+            f"{expression_wide.shape[1] - 1:,} genes"
+        )
+
+    metadata_all = pd.concat(metadata_parts, ignore_index=True)
+    chemistry_all = (
+        pd.concat(chemistry_parts, ignore_index=True)
+        .drop_duplicates(subset=[COMPOUND_KEY])
+        .reset_index(drop=True)
+    )
+    expression_wide = pd.concat(expression_parts, axis=0)
+    source_job = expression_wide.pop("source_job")
+    if expression_wide.index.has_duplicates:
+        dupes = int(expression_wide.index.duplicated().sum())
+        print(f"[expr] averaging {dupes:,} duplicate compound ids across jobs")
+        expression_wide = expression_wide.groupby(level=0, sort=True).mean()
+    else:
+        expression_wide = expression_wide.sort_index()
+    expression_wide = expression_wide.reindex(columns=gene_filter).astype("float32")
+
+    metadata_all.to_parquet(METADATA_PATH)
+    chemistry_all.to_parquet(CHEMISTRY_PATH)
     print(f"[save] {METADATA_PATH.name}, {CHEMISTRY_PATH.name}")
 
-    # Convert raw UMI counts -> compact compound x scored-gene matrix in
-    # log2(CPM + 1). Filtering to the official scored genes before the
-    # conversion avoids writing an enormous long table.
-    expression_wide = counts_to_expression_wide(
-        counts,
-        metadata,
-        gene_filter=load_gene_filter(),
-        compound_col=COMPOUND_KEY,
-    )
     expression_wide.to_parquet(EXPRESSION_WIDE_PATH)
     print(
         f"[save] {EXPRESSION_WIDE_PATH.name}: "
@@ -344,6 +386,7 @@ def load_training_matrix() -> tuple[pd.DataFrame, pd.Series, list[str]]:
         wide = pd.read_parquet(EXPRESSION_WIDE_PATH)
         wide.index = wide.index.astype(str)
         wide.columns = wide.columns.astype(str)
+        wide = wide.fillna(wide.mean(axis=0))
     else:
         expr = pd.read_parquet(EXPRESSION_PATH)  # compound, gene_id, expression
         expr["compound"] = expr["compound"].astype(str)
@@ -391,6 +434,7 @@ def fit_mlp(
     batch_size: int = MLP_BATCH_SIZE,
     lr: float = MLP_LR,
     scale: bool = True,
+    pca_components: int | None = None,
     verbose: bool = True,
 ):
     from models import TorchMLPRegressor
@@ -407,12 +451,45 @@ def fit_mlp(
     return reg
 
 
+def fit_mlp_pca(
+    x: np.ndarray,
+    y: np.ndarray,
+    *,
+    epochs: int = MLP_EPOCHS,
+    batch_size: int = MLP_BATCH_SIZE,
+    lr: float = MLP_LR,
+    scale: bool = True,
+    pca_components: int = PCA_COMPONENTS,
+    verbose: bool = True,
+):
+    from models import PCATargetRegressor, TorchMLPRegressor
+
+    base = TorchMLPRegressor(
+        epochs=epochs,
+        batch_size=batch_size,
+        lr=lr,
+        scale=scale,
+        seed=RANDOM_STATE,
+        verbose=verbose,
+    )
+    reg = PCATargetRegressor(
+        n_components=pca_components,
+        base=base,
+        seed=RANDOM_STATE,
+        verbose=verbose,
+    )
+    reg.fit(x, y)
+    return reg
+
+
 def build_model(kind: str, x: np.ndarray, y: np.ndarray, *, verbose: bool = True, **mlp_kw):
     """Fit and return the requested model (sklearn-style fit/predict)."""
     if kind == "ridge":
         return fit_ridge(x, y)
     if kind == "mlp":
         return fit_mlp(x, y, verbose=verbose, **mlp_kw)
+    if kind == "mlp_pca":
+        return fit_mlp_pca(x, y, verbose=verbose, **mlp_kw)
     msg = f"unknown model kind: {kind!r}"
     raise ValueError(msg)
 
@@ -472,7 +549,7 @@ def validate(
     """Held-out-compound validation in leaderboard wMSE.
 
     Always scores the per-gene-mean baseline and Ridge; additionally
-    scores the MLP when ``model_kind == "mlp"``. Uses a Bemis-Murcko
+    scores the selected MLP variant. Uses a Bemis-Murcko
     scaffold split so validation compounds carry scaffolds unseen in
     training. Returns ``{name: wmse_mean}``.
     """
@@ -500,9 +577,10 @@ def validate(
             fit_ridge(x[tr_idx], y[tr_idx]).predict(x[val_idx]), 0.0, None
         ),
     }
-    if model_kind == "mlp":
-        mlp = fit_mlp(x[tr_idx], y[tr_idx], **(mlp_kw or {}))
-        preds["MLP (Morgan fp)"] = np.clip(mlp.predict(x[val_idx]), 0.0, None)
+    if model_kind in {"mlp", "mlp_pca"}:
+        model = build_model(model_kind, x[tr_idx], y[tr_idx], **(mlp_kw or {}))
+        label = "MLP PCA (Morgan fp)" if model_kind == "mlp_pca" else "MLP (Morgan fp)"
+        preds[label] = np.clip(model.predict(x[val_idx]), 0.0, None)
 
     scores = {
         name: aggregate_leaderboards(
@@ -621,6 +699,11 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--job", default=JOB, help=f"VCPI release (default {JOB})")
     parser.add_argument(
+        "--jobs",
+        default=None,
+        help="comma-separated VCPI releases to combine, e.g. tvc-qnu-012,tvc-kdl-010",
+    )
+    parser.add_argument(
         "--skip-fetch",
         action="store_true",
         help="reuse existing parquet artifacts; skip network fetch (stages 2-6)",
@@ -630,7 +713,7 @@ def main() -> int:
     )
     parser.add_argument(
         "--model",
-        choices=["ridge", "mlp"],
+        choices=["ridge", "mlp", "mlp_pca"],
         default="ridge",
         help="final/served model (default ridge). validation always shows both.",
     )
@@ -638,6 +721,12 @@ def main() -> int:
     parser.add_argument("--epochs", type=int, default=MLP_EPOCHS, help="MLP epochs")
     parser.add_argument("--batch-size", type=int, default=MLP_BATCH_SIZE, help="MLP batch size")
     parser.add_argument("--lr", type=float, default=MLP_LR, help="MLP learning rate")
+    parser.add_argument(
+        "--pca-components",
+        type=int,
+        default=PCA_COMPONENTS,
+        help="MLP PCA target components (default 256)",
+    )
     parser.add_argument(
         "--no-scale",
         action="store_true",
@@ -656,15 +745,18 @@ def main() -> int:
         "batch_size": args.batch_size,
         "lr": args.lr,
         "scale": not args.no_scale,
+        "pca_components": args.pca_components,
     }
+
+    jobs = [j.strip() for j in args.jobs.split(",") if j.strip()] if args.jobs else [args.job]
 
     if args.demo:
         build_demo_artifacts(args.job)
     elif not args.skip_fetch:
-        build_artifacts(args.job)
-    elif not EXPRESSION_PATH.exists():
+        build_artifacts_for_jobs(jobs)
+    elif not EXPRESSION_WIDE_PATH.exists() and not EXPRESSION_PATH.exists():
         print(
-            f"[error] --skip-fetch set but {EXPRESSION_PATH} is missing. "
+            f"[error] --skip-fetch set but {EXPRESSION_WIDE_PATH} is missing. "
             "Run once without --skip-fetch (needs TVC_TOKEN), or use --demo.",
             file=sys.stderr,
         )

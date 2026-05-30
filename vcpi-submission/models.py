@@ -193,3 +193,64 @@ class TorchMLPRegressor:
                 xb = torch.from_numpy(xs[i : i + bs])
                 out[i : i + bs] = self.net(xb).numpy()
         return out
+
+
+class PCATargetRegressor:
+    """Wrap a regressor so it predicts compressed expression PCs.
+
+    The model learns ``X -> PCA(Y)`` and converts predictions back to the
+    original gene-expression space with ``inverse_transform``. This is a
+    good fit for the VCPI MLP because 12,995 gene outputs are much easier
+    to overfit than a few hundred transcriptomic programs.
+    """
+
+    def __init__(
+        self,
+        *,
+        n_components: int = 256,
+        base: TorchMLPRegressor | None = None,
+        seed: int = 42,
+        verbose: bool = True,
+    ) -> None:
+        self.n_components = n_components
+        self.base = base
+        self.seed = seed
+        self.verbose = verbose
+        self.pca = None
+        self.n_outputs_: int | None = None
+        self.explained_variance_ratio_sum_: float | None = None
+
+    def fit(self, x: np.ndarray, y: np.ndarray) -> PCATargetRegressor:
+        from sklearn.decomposition import PCA
+
+        x = np.asarray(x, dtype=np.float32)
+        y = np.asarray(y, dtype=np.float32)
+        self.n_outputs_ = y.shape[1]
+        n_components = min(self.n_components, y.shape[0] - 1, y.shape[1])
+        if n_components < 1:
+            msg = "PCA target model needs at least 2 training rows"
+            raise ValueError(msg)
+
+        if self.verbose:
+            print(f"[pca] fitting target PCA: {y.shape[1]} genes -> {n_components} PCs")
+        self.pca = PCA(
+            n_components=n_components,
+            svd_solver="randomized",
+            random_state=self.seed,
+        )
+        y_pc = self.pca.fit_transform(y).astype(np.float32)
+        self.explained_variance_ratio_sum_ = float(self.pca.explained_variance_ratio_.sum())
+        if self.verbose:
+            print(f"[pca] explained variance: {self.explained_variance_ratio_sum_:.3f}")
+
+        if self.base is None:
+            self.base = TorchMLPRegressor(seed=self.seed, verbose=self.verbose)
+        self.base.fit(x, y_pc)
+        return self
+
+    def predict(self, x: np.ndarray) -> np.ndarray:
+        if self.pca is None or self.base is None:
+            msg = "PCATargetRegressor is not fitted"
+            raise RuntimeError(msg)
+        y_pc = self.base.predict(x)
+        return self.pca.inverse_transform(y_pc).astype(np.float32)

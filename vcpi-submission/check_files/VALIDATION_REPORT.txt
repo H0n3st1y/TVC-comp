@@ -1,0 +1,30 @@
+VCPI Submission Validation Report
+Generated: 2026-05-30
+Script: check_files/validate_submission.py
+File checked: predictions.parquet
+
+=== Input Files ===
+predictions.parquet    — 13,826,680 rows
+test_compounds.csv     — 1,064 test compounds
+
+=== Checks ===
+  ok    required columns present  (compound, gene_id, predicted_expression)
+  ok    row count                 (13,826,680 / 13,826,680)
+  ok    all 1,064 test compounds covered
+  ok    all 12,995 genes present
+  ok    each compound has exactly 12,995 gene rows (spot-check 50 compounds)
+  ok    no NaN predictions
+  ok    no negative predictions
+  ok    no duplicate (compound, gene_id) pairs
+
+=== Prediction Stats ===
+  min  : 0.0102
+  mean : 3.6620
+  max  : 14.0316
+  dtype: float32
+
+=== RESULT: ALL CHECKS PASSED — file is submission-ready. ===
+
+=== SHA256 ===
+SHA256(predictions.parquet) =
+0597f566f4f3a4234fc41f025e27ca4e6d851be1e65db327ee074dc3b6cdc007
